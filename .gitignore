@@ -1,0 +1,46 @@
+# Local environment files and credentials. Keep only the documented template.
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Python environments and generated caches.
+/.venv/
+/venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+
+# Project-local provider installations, browser state, and user data.
+/.tools/
+/data/
+/.auth/
+/.browser-profile/
+/browser-profile/
+/chrome-profile/
+/playwright/.auth/
+
+# Frontend dependencies and generated build/test output.
+node_modules/
+dist/
+build/
+apps/web/.vite/
+apps/web/dist/
+apps/web/coverage/
+apps/web/*.tsbuildinfo
+playwright-report/
+test-results/
+
+# Local logs and OS metadata.
+*.log
+/logs/
+/tmp/
+/temp/
+.DS_Store

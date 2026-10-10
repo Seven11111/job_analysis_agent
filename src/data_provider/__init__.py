@@ -1,0 +1,1 @@
+"""Compliant job data providers."""
