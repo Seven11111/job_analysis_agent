@@ -15,12 +15,12 @@ from api.v1.schemas.providers import (
 )
 from src.config import get_settings
 from src.services.boss_cli import BossCliIncompatible, BossCliUnavailable
-from src.services.boss_login_service import BossLoginService, LoginRunNotFound
+from src.services.boss_login_service import LoginRunNotFound, boss_login_service
 from src.services.campus_recruit_service import CampusRecruitService
 
 
 router = APIRouter(prefix="/providers", tags=["providers"])
-service = BossLoginService()
+service = boss_login_service
 
 
 @router.get("/boss/status", response_model=BossProviderStatusResponse, summary="查询 BOSS 登录状态")

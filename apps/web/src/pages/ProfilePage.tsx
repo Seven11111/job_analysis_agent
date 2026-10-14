@@ -26,6 +26,7 @@ import {
   type ResumeStructuredContent,
   type ResumeVersion,
 } from "../api/client";
+import { CityPicker } from "../components/JobSearchFilters";
 import { cityGroups, quickCityOptions } from "../data/job-search-cities";
 
 const emptyProfile: CandidateProfile = {
@@ -56,8 +57,9 @@ const emptyResume: ResumeStructuredContent = {
   summary: null,
 };
 
-const targetPositionSuggestions = ["后端开发", "前端开发", "AI 应用", "算法工程师", "数据分析", "数据开发", "测试开发", "客户端开发", "运维开发", "产品技术"];
+const targetPositionSuggestions = ["后端开发", "前端开发", "AI 应用开发", "Agent 开发", "大模型应用开发", "算法工程师", "数据开发", "数据分析", "测试开发", "客户端开发", "云计算 / DevOps"];
 const targetCitySuggestions = [...new Set([...quickCityOptions, ...cityGroups.flatMap((group) => group.cities)])];
+const desiredIndustrySuggestions = ["互联网 / 软件", "人工智能", "云计算 / 企业服务", "金融科技", "电商 / 消费互联网", "游戏 / 文娱", "智能制造", "新能源 / 汽车", "通信 / 半导体", "医疗健康", "教育科技"];
 
 interface ResumeEditorState {
   mode: "attachment" | "version";
@@ -389,15 +391,20 @@ export function ProfilePage() {
           <div><p className="text-xs font-semibold uppercase tracking-[0.2em] text-brand">SEARCH PREFERENCES</p><h2 className="mt-2 text-2xl font-semibold text-ink">求职偏好</h2><p className="mt-1 text-sm text-slate-500">用于搜索与推荐；不会因为简历解析而自动改变。</p></div>
           <button disabled={saving} className="inline-flex items-center gap-2 rounded-xl bg-ink px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:opacity-50"><Save size={16} />保存偏好</button>
         </div>
-        <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           <Field label="学校" value={profile.school ?? ""} onChange={(value) => update("school", value)} placeholder="例如：某大学" />
           <Field label="专业" value={profile.major ?? ""} onChange={(value) => update("major", value)} placeholder="例如：计算机科学" />
-          <Field label="目标岗位方向" value={profile.target_directions.join("、")} onChange={(value) => update("target_directions", splitValues(value))} placeholder="后端、AI 应用" />
-          <Field label="目标城市" value={profile.target_cities.join("、")} onChange={(value) => update("target_cities", splitValues(value))} placeholder="上海、杭州" />
           <Field label="可实习时间" value={profile.available_period ?? ""} onChange={(value) => update("available_period", value)} placeholder="例如：2026 年暑期" />
           <Field label="每周出勤天数" type="number" value={profile.days_per_week?.toString() ?? ""} onChange={(value) => update("days_per_week", value ? Number(value) : null)} placeholder="4" />
           <Field label="实习时长（月）" type="number" value={profile.internship_months?.toString() ?? ""} onChange={(value) => update("internship_months", value ? Number(value) : null)} placeholder="3" />
-          <Field label="关注行业" value={profile.desired_industries.join("、")} onChange={(value) => update("desired_industries", splitValues(value))} placeholder="互联网、AI" />
+        </div>
+        <div className="mt-5 grid gap-5 xl:grid-cols-2">
+          <TagAutocompleteField label="目标岗位方向" value={profile.target_directions} onChange={(value) => update("target_directions", value)} suggestions={targetPositionSuggestions} placeholder="输入岗位方向" helperText="可选常用方向或自定义；按回车、逗号或离开输入框添加。" />
+          <TagAutocompleteField label="关注行业" value={profile.desired_industries} onChange={(value) => update("desired_industries", value)} suggestions={desiredIndustrySuggestions} placeholder="搜索或输入行业" helperText="选择常见行业或输入自定义行业；支持多项粘贴，离开输入框也会添加。" />
+        </div>
+        <div className="mt-5">
+          <CityPicker label="目标城市" values={profile.target_cities} onChange={(cities) => update("target_cities", cities)} />
+          <p className="mt-2 text-xs text-slate-400">留空表示不限制城市；点击“更多城市”可按省份查找并多选。</p>
         </div>
       </form>
 
@@ -808,7 +815,7 @@ function TagAutocompleteField({ label, value, onChange, suggestions, placeholder
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             onFocus={() => setFocused(true)}
-            onBlur={() => { setFocused(false); setActiveIndex(-1); }}
+            onBlur={() => { setFocused(false); setActiveIndex(-1); if (draft.trim()) commit(); }}
             placeholder={value.length ? "继续添加…" : placeholder}
             className="h-7 min-w-28 flex-1 border-0 bg-transparent px-1 text-sm text-ink outline-none placeholder:text-slate-400 focus:ring-0"
           />
@@ -844,7 +851,7 @@ function appendUniqueValues(current: string[], incoming: string[]) {
 function ListTextField({ label, value, onChange, delimiter = "comma" }: { label: string; value: string[]; onChange: (value: string[]) => void; delimiter?: "comma" | "lines" }) { const separator = delimiter === "lines" ? "\n" : "、"; return delimiter === "lines" ? <TextAreaField label={label} value={value.join(separator)} onChange={(next) => onChange(next.split(/\r?\n/).map((item) => item.trim()).filter(Boolean))} rows={2} /> : <Field label={label} value={value.join(separator)} onChange={(next) => onChange(splitValues(next))} placeholder="" />; }
 function TextAreaField({ label, value, onChange, rows }: { label: string; value: string; onChange: (value: string) => void; rows: number }) { return <label className="mt-3 block"><span className="text-xs font-medium text-slate-600">{label}</span><textarea value={value} onChange={(event) => onChange(event.target.value)} rows={rows} className="mt-1.5 w-full resize-y rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm leading-6 outline-none focus:border-brand" /></label>; }
 function Field({ label, value, onChange, placeholder, type = "text" }: { label: string; value: string; onChange: (value: string) => void; placeholder: string; type?: string }) { return <label className="block"><span className="text-xs font-medium text-slate-600">{label}</span><input type={type} value={value} onChange={(event: ChangeEvent<HTMLInputElement>) => onChange(event.target.value)} placeholder={placeholder} className="mt-1.5 h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:border-brand focus:ring-4 focus:ring-brand/10" /></label>; }
-function splitValues(value: string) { return value.split(/[、,，]/).map((item) => item.trim()).filter(Boolean); }
+function splitValues(value: string) { return value.split(/[、,，\r\n]/).map((item) => item.trim()).filter(Boolean); }
 function nullable(value: string) { return value.trim() ? value : null; }
 function normalizeResumeContent(content: ResumeStructuredContent | null): ResumeStructuredContent {
   return {

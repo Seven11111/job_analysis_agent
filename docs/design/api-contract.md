@@ -151,6 +151,7 @@ bash scripts/install_provider_tools.sh job-pro
   "days_per_week": null,
   "conversion_chance": null,
   "providers": ["job_pro", "boss_agent_cli"],
+  "sort_by": "recommended",
   "page": 1,
   "limit": 20
 }
@@ -164,6 +165,20 @@ bash scripts/install_provider_tools.sh job-pro
 - `salary_min` 只有 `salary_mode=minimum` 时生效；未公开薪资不能满足最低薪资条件。
 - `published_range` 不是 `all` 时，没有 `published_date` 的岗位必须排除。
 - `providers` 为空时使用配置中启用的 Provider；`page` 与 `limit` 用于分页，岗位搜索页面支持页码按钮、直接跳页和每页数量调整。
+- `sort_by` 支持 `recommended` 和 `newest`。`recommended` 按当前已确认求职偏好与当前在线简历进行本地规则排序；没有画像/简历资料时透明回退到发布日期排序，不生成虚假匹配分。当前关键词、公司、城市、来源、日期及其他显式筛选先执行，不会被画像放宽或覆盖。
+- 搜索响应包含 `recommendation_context` 和每条岗位的 `recommendation`：匹配参考分、匹配点、待核对点、未知信息及反馈。匹配依据来自岗位标准字段/公开描述与画像/当前在线简历；不调用 LLM，不表示录用概率。附件简历只有在用户确认解析并成为当前在线简历后才参与排序。
+
+搜索响应中的 `recommendation_context` 标识排序方式以及是否读取求职偏好/当前在线简历。每条临时岗位结果的 `recommendation` 包含 `score`（可为空）、`label`、`matched_points`、`missing_points`、`unknown_points` 和 `feedback`。
+
+### `PUT /jobs/search-results/{result_token}/feedback`
+
+对当前临时搜索结果记录反馈，可改为另一选项或传 `null` 撤销：
+
+```json
+{"feedback": "interested"}
+```
+
+`feedback` 取 `interested`、`not_interested` 或 `null`。在智能排序下，感兴趣结果前置、不感兴趣结果后置；选择最新排序时反馈不改变顺序。反馈只保存在服务进程的临时搜索结果中，不进入数据库、不自动改变求职画像或岗位状态；服务重启后清除。结果不存在或进程重启后再次提交会返回 `404 search_result_expired`。
 
 ### Offer 先生校招资讯（独立于实习岗位）
 
@@ -423,6 +438,52 @@ DELETE /applications/status-definitions/{status_id}
 
 状态删除采用停用而非物理删除，已有历史事件仍然保留。初次使用时系统创建一组默认状态，但用户可以新增、修改和停用状态；系统不会根据岗位搜索或模型结果自动修改当前状态。
 
+### 求职工作台接口
+
+工作台概览和用户主动维护的待办、面试安排使用以下接口。所有列表仅返回当前本地画像的数据；关联的 `application_id` 必须属于该画像。工作台读写不把面试记录解释为岗位状态，也不自动修改岗位跟踪状态。
+
+```text
+GET    /workbench/overview
+GET    /workbench/todos?status=open|completed|all&page=1&limit=100
+POST   /workbench/todos
+PATCH  /workbench/todos/{todo_id}
+DELETE /workbench/todos/{todo_id}
+GET    /workbench/interviews?start_at=<ISO8601>&end_at=<ISO8601>
+POST   /workbench/interviews
+PATCH  /workbench/interviews/{interview_id}
+DELETE /workbench/interviews/{interview_id}
+```
+
+待办请求示例：
+
+```json
+{
+  "title": "准备技术面试",
+  "application_id": 501,
+  "due_at": "2026-10-20T18:00:00+08:00",
+  "priority": "high",
+  "note": "复习项目中的检索和 Agent 设计"
+}
+```
+
+面试安排请求示例：
+
+```json
+{
+  "title": "技术一面",
+  "application_id": 501,
+  "starts_at": "2026-10-21T14:00:00+08:00",
+  "ends_at": "2026-10-21T15:00:00+08:00",
+  "timezone": "Asia/Shanghai",
+  "interview_format": "online",
+  "meeting_url": "https://example.com/meeting"
+}
+```
+
+创建/修改时提交的时间必须包含时区，持久化为 UTC；页面按北京时间展示。截止时间、公司、岗位和备注等可选字段可以显式传 `null` 清空。结束时间必须晚于开始时间。若删除 `applications` 跟踪关系，关联的待办和面试安排通过 `ON DELETE SET NULL` 保留，并不删除用户的个人计划。
+
+`GET /workbench/overview` 返回以下可核对的统计：当前跟踪岗位总数、待处理/逾期/已完成待办数、未来面试数、未来 7 天面试数、按用户状态定义统计的当前岗位分布，以及最近 6 周按北京时间自然周统计的状态事件数。它不计算自定义状态的转化率，不把搜索结果视为已保存或已投递岗位。
+
 ## 5. 用户画像、简历和记忆
 
 ### `GET /profile`
@@ -591,32 +652,77 @@ LLM 调用失败或结构化报告校验失败返回 `502 generation_failed`，�
 
 返回完整结构化匹配报告、使用的简历版本、岗位快照时间和来源证据。
 
-## 7. 求职 Agent
+## 7. 岗位订阅与查新
+
+订阅只能引用岗位搜索页已接入的岗位来源 `boss_agent_cli`、`job_pro`；校招公告来源和离线 Fixture 不接受。查新仅在本机 API 进程运行期间执行，结果临时保留 30 天，不发 QQ、邮件或其他外部通知。
+
+### `GET /subscriptions`
+
+返回当前单用户的订阅列表及每条订阅最近一次运行摘要。
+
+### `POST /subscriptions`
+
+创建岗位查新。`filters` 使用 `POST /jobs/search` 的当前条件结构，并必须包含至少一个有效岗位 Provider。
+
+```json
+{
+  "name": "杭州 Agent 实习",
+  "filters": {
+    "keyword": "Agent",
+    "cities": ["杭州"],
+    "published_range": "3d",
+    "salary_mode": "any",
+    "providers": ["job_pro"],
+    "sort_by": "newest"
+  },
+  "frequency": "daily",
+  "schedule_time": "09:00",
+  "weekday": null,
+  "interval_days": null,
+  "month_day": null
+}
+```
+
+`frequency` 可为 `manual`、`daily`、`weekdays`、`weekly`、`interval` 或 `monthly`。所有定时计划使用北京时间 `schedule_time`，格式为 24 小时制 `HH:mm`，精确到分钟、不支持秒；本地调度器按分钟边界检查。周计划使用 ISO 星期编号（周一 `1` 至周日 `7`），间隔计划的 `interval_days` 为 2–30，每月计划的 `month_day` 为 1–31（短月按当月最后一天执行）。响应返回归一化条件、周期参数、启停状态、下一次运行时间及最新运行信息。
+
+### `GET /subscriptions/{subscription_id}` / `PATCH /subscriptions/{subscription_id}` / `DELETE /subscriptions/{subscription_id}`
+
+读取、部分更新或删除当前用户的查新条件。更新支持 `name`、`filters`、`frequency`、`schedule_time`、`weekday`、`interval_days`、`month_day`、`enabled`。删除会清除该订阅的查新记录和去重键，不删除已保存到岗位管理的岗位、快照或投递记录。
+
+### `POST /subscriptions/{subscription_id}/runs`
+
+立即同步运行一次查新，返回运行摘要。Provider 全部失败时也返回记录，`status` 为 `failed`，错误放在 `provider_results` 和 `error_message` 中；部分来源失败时为 `partial_failed`。`no_new` 表示来源正常但没有新岗位。
+
+### `GET /subscriptions/{subscription_id}/runs` / `GET /subscriptions/{subscription_id}/runs/{run_id}`
+
+分页查询运行记录及该次岗位预览。运行详情接受 `page`、`limit`（最大 100），每项包含原始 Provider 和岗位来源链接。岗位预览保留 30 天；运行摘要和用于去重的哈希保留到删除订阅。
+
+### `POST /subscriptions/items/{item_id}/save`
+
+用户确认后，将一条查新预览写入 `jobs`、`job_snapshots` 和 `applications`。重复点击幂等返回同一岗位/跟踪记录；搜索或定时查新本身不会写岗位库。
+
+错误码：`404 subscription_not_found` 表示订阅/运行/预览不存在或已过期；`409 subscription_running` 表示同一订阅正在查新；`422 invalid_subscription` 表示来源或条件无效。
+
+## 8. 求职 Agent
 
 ### `GET /agent/tools`
 
-返回当前注册的工具名称、说明和 JSON 参数 Schema。第一版工具包括：
+返回当前注册的工具名称、说明和 JSON 参数 Schema。工具按业务能力分组如下（以接口运行时返回为准）：
 
-```json
-[
-  {"name": "preview_job_link", "description": "读取公开岗位链接并提取预览，不保存", "parameters": {"type": "object"}},
-  {"name": "search_jobs", "description": "搜索岗位", "parameters": {"type": "object"}},
-  {"name": "list_saved_jobs", "description": "查询已保存岗位", "parameters": {"type": "object"}},
-  {"name": "get_saved_job_detail", "description": "查询岗位与状态历史", "parameters": {"type": "object"}},
-  {"name": "compare_saved_jobs", "description": "对比 2 到 5 个已保存岗位", "parameters": {"type": "object"}},
-  {"name": "get_application_status", "description": "汇总投递状态", "parameters": {"type": "object"}},
-  {"name": "get_candidate_profile", "description": "读取求职画像", "parameters": {"type": "object"}},
-  {"name": "get_current_resume", "description": "读取当前简历（脱敏）", "parameters": {"type": "object"}},
-  {"name": "propose_save_job", "description": "提出收藏岗位操作", "parameters": {"type": "object"}},
-  {"name": "propose_application_update", "description": "提出岗位记录修改", "parameters": {"type": "object"}},
-  {"name": "propose_remove_saved_job", "description": "提出移除岗位操作", "parameters": {"type": "object"}},
-  {"name": "propose_profile_update", "description": "提出画像修改", "parameters": {"type": "object"}},
-  {"name": "propose_resume_update", "description": "提出简历修改", "parameters": {"type": "object"}},
-  {"name": "analyze_saved_job", "description": "分析已保存岗位", "parameters": {"type": "object"}}
-]
-```
+- 岗位与推荐：`search_jobs`（服从岗位搜索页所选来源，支持分页）、`preview_job_link`、`set_job_recommendation_feedback`、`list_saved_jobs`（关键词/城市/状态/分析情况/分页）、`get_saved_job_detail`、`compare_saved_jobs`、`get_application_status`、`analyze_saved_job`。
+- 校招资讯与来源：`search_campus_recruit`（只读公告，不写入实习岗位库）、`get_provider_status`；仅在用户明确要求时，`start_boss_login` / `cancel_boss_login` 可启动或停止本机官方 BOSS 登录流程。
+- 工作台与订阅：`get_workbench_overview`、`list_todos`、`list_interviews`；岗位订阅支持 `list_job_subscriptions`、`get_job_subscription`、`list_job_subscription_runs`、`get_job_subscription_run`、`run_job_subscription`。手动查新只产生临时预览，不自动保存岗位。
+- 订阅写操作：`propose_job_subscription_create`、`propose_job_subscription_update`、`propose_job_subscription_delete` 均生成持久化确认卡片；确认前不创建、修改、暂停、恢复或删除订阅。创建/换来源仅可选岗位搜索页当前已勾选且后端可用的来源。删除只清除该订阅、查新历史和去重记录，不删除已保存岗位。
+- 待办和面试新增、修改、删除以及其他业务写入均通过 `propose_*` 操作并要求用户确认。
+- 画像和简历：`get_candidate_profile`、`list_profile_facts`、`get_current_resume`、`list_resume_versions`、`list_resume_attachments`；画像、记忆和简历操作通过确认流程。原始简历文件必须先在个人画像页面上传；Agent 不读取附件原文或私密联系方式。
+- 投递状态：可新增/修改/停用自定义状态，并修改岗位当前状态、历史状态时间和备注；写入均需确认。
+- 通用对话和历史会话由 Agent 会话与 SSE API 提供；岗位查新既可通过本节独立 API 和 `/jobs/subscriptions` 页面管理，也可由 Agent 查询、手动执行或通过确认卡片创建/调整/删除。
 
 用户在 Agent 对话中提供招聘链接并请求查看、提取或分析时，Agent 调用 `preview_job_link`。该工具复用 `POST /jobs/import/preview` 的公开页面读取与字段提取逻辑，SSE 工具事件和助手消息会携带结构化预览及来源链接；预览不会写入岗位表。前端允许校对岗位名称、公司、城市、类型、发布日期、薪资和描述。用户明确申请收藏后，Agent 使用预览 token 和更正字段生成现有 `save_job` 待确认操作；只有用户确认后才写入岗位、快照和个人投递跟踪。无法访问、非岗位页面或站点限制会返回明确错误，不绕过登录、验证码或访问控制；网页文字按不可信数据处理。
+
+`get_provider_status` 仅返回 BOSS 登录状态、job-pro 安装和已配置公司概况、Offer 先生配置状态，以及 LiteLLM Provider/模型名与是否已配置；不会返回任何密钥。Agent 发起的 BOSS 登录与 `/providers/boss/login/*` 共用同一个本地运行实例，因此岗位搜索页可继续显示状态和 SSE 进度。启动登录不等于登录成功，需等待用户在官方页面操作并再次查询状态。
+
+待办和面试时间使用带时区 ISO 8601，输出转换为安排的时区或北京时间。岗位状态历史时间的 Agent 输入也必须带时区偏移，避免把本地时间误当 UTC。对岗位来源、待办、面试、状态、画像、简历或附件的创建、修改、删除和切换，Agent 必须先发出 `action_proposed` 并等待确认；取消不会写入。模型侧工具调用不允许直接修改数据库。
 
 ### `GET /agent/sessions`
 
@@ -655,10 +761,10 @@ event: run_started
 data: {"id":101,"run_id":"...","sequence":1,"type":"run_started","payload":{"session_id":12}}
 
 event: tool_started
-data: {"id":102,"run_id":"...","sequence":2,"type":"tool_started","name":"list_saved_jobs"}
+data: {"id":102,"run_id":"...","sequence":2,"type":"tool_started","name":"list_saved_jobs","payload":{"tool":"list_saved_jobs","parameter_summary":"页码：1"}}
 
 event: tool_completed
-data: {"id":103,"run_id":"...","sequence":3,"type":"tool_completed","payload":{"tool":"list_saved_jobs","summary":"找到已保存岗位"}}
+data: {"id":103,"run_id":"...","sequence":3,"type":"tool_completed","payload":{"tool":"list_saved_jobs","summary":"找到已保存岗位","duration_ms":34}}
 
 event: assistant_delta
 data: {"id":104,"run_id":"...","sequence":4,"type":"assistant_delta","payload":{"text":"你目前保存了 3 个岗位。"}}
@@ -667,7 +773,9 @@ event: assistant_completed
 data: {"id":105,"run_id":"...","sequence":5,"type":"assistant_completed","payload":{"message_id":9001,"text":"你目前保存了 3 个岗位。"}}
 ```
 
-还支持 `action_proposed`、`action_resolved`。岗位保存、状态/备注修改、移除跟踪、画像修改和简历修改会先产生 `action_proposed`，状态为 `pending`；模型不会直接执行写操作。移除岗位只删除个人岗位管理中的收藏/跟踪关系及其状态历史，保留岗位来源数据、快照和分析历史。运行结束事件为 `assistant_completed`、`run_failed` 或 `run_cancelled`。文本按较小片段持续推送，停止事件会保留已生成的部分回答；失败事件包含面向用户的安全文案，不包含密钥、完整 Prompt 或第三方堆栈。
+还支持 `action_proposed`、`action_resolved`。岗位保存、状态/备注修改、移除跟踪、订阅/待办/面试管理、画像修改和简历修改会先产生 `action_proposed`，状态为 `pending`；模型不会直接执行写操作。移除岗位只删除个人岗位管理中的收藏/跟踪关系及其状态历史，保留岗位来源数据、快照和分析历史。运行结束事件为 `assistant_completed`、`run_failed` 或 `run_cancelled`。文本按较小片段持续推送，停止事件会保留已生成的部分回答；失败事件包含面向用户的安全文案，不包含密钥、完整 Prompt 或第三方堆栈。
+
+操作轨迹只包含工具名、白名单参数摘要、结果摘要、状态和工具执行耗时，不记录隐藏推理过程；自由文本备注、会议链接、简历内容等不会写入参数摘要。`duration_ms` 从工具开始执行到工具返回计算，不包含等待用户确认的停留时间。
 
 ### `POST /agent/sessions/{session_id}/runs/{run_id}/cancel`
 
@@ -689,7 +797,7 @@ data: {"id":105,"run_id":"...","sequence":5,"type":"assistant_completed","payloa
 
 Agent 支持一般对话及多轮上下文。模型每轮使用最近 12 条消息（单条最多 6000 字符），并选择性附加最近的成功工具证据；完整消息和事件仍保存在 SQLite，可通过会话接口切换和查看。此窗口不是无限上下文，也尚未实现自动摘要压缩。
 
-## 8. 设置接口
+## 9. 设置接口
 
 ### `GET /settings`
 
@@ -708,7 +816,7 @@ Agent 支持一般对话及多轮上下文。模型每轮使用最近 12 条消�
 
 只修改非敏感配置。API Key、App Secret 等密钥不接受在响应中回显，也不写入普通业务表。
 
-## 9. 契约变更规则
+## 10. 契约变更规则
 
 - 新增字段优先采用可选字段，避免破坏前端。
 - 删除字段或修改枚举必须同步更新 PRD、Schema、前端类型和测试。

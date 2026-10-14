@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -12,18 +13,33 @@ from api.v1.router import router as v1_router
 from src.config import get_settings
 
 
-@asynccontextmanager
-async def lifespan(_: FastAPI):
+def create_app(*, enable_subscription_scheduler: bool = False) -> FastAPI:
     settings = get_settings()
-    logging.basicConfig(
-        level=settings.log_level,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
-    yield
 
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        logging.basicConfig(
+            level=settings.log_level,
+            format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        )
+        scheduler_task = None
+        if enable_subscription_scheduler:
+            from api.v1.endpoints.subscriptions import service as subscription_service
+            from src.services.subscription_scheduler import JobSubscriptionScheduler
 
-def create_app() -> FastAPI:
-    settings = get_settings()
+            scheduler = JobSubscriptionScheduler(subscription_service)
+            scheduler_task = asyncio.create_task(scheduler.run_forever())
+            app.state.job_subscription_scheduler = scheduler
+        try:
+            yield
+        finally:
+            if scheduler_task is not None:
+                scheduler_task.cancel()
+                try:
+                    await scheduler_task
+                except asyncio.CancelledError:
+                    pass
+
     app = FastAPI(
         title="Job Analysis Agent API",
         version="0.1.0",

@@ -21,6 +21,11 @@ export interface JobSearchRequest {
   salary_mode: SalaryMode;
   salary_min?: number;
   internship_type?: string;
+  education?: string;
+  internship_months?: number;
+  days_per_week?: number;
+  conversion_chance?: string;
+  sort_by?: "recommended" | "newest";
   page: number;
   limit: number;
   providers?: string[];
@@ -76,6 +81,16 @@ export interface JobSummary {
   is_saved: boolean;
   application: null;
   latest_match: MatchSummary | null;
+  recommendation: JobRecommendation | null;
+}
+
+export interface JobRecommendation {
+  score: number | null;
+  label: string;
+  matched_points: string[];
+  missing_points: string[];
+  unknown_points: string[];
+  feedback: "interested" | "not_interested" | null;
 }
 
 export interface JobDetail extends JobSummary {
@@ -166,6 +181,104 @@ export interface JobSearchResponse {
   page: number;
   limit: number;
   quality: SearchQuality;
+  recommendation_context: {
+    sort_by: "recommended" | "newest";
+    personalized: boolean;
+    profile_used: boolean;
+    resume_used: boolean;
+    message: string;
+  };
+}
+
+export interface RecommendationFeedbackResponse {
+  result_token: string;
+  feedback: "interested" | "not_interested" | null;
+  message: string;
+}
+
+export type SubscriptionFrequency = "manual" | "daily" | "weekdays" | "weekly" | "interval" | "monthly";
+export type SubscriptionRunStatus = "running" | "succeeded" | "no_new" | "partial_failed" | "failed" | "interrupted";
+
+export interface SubscriptionProviderResult {
+  provider: string;
+  status: string;
+  count: number;
+  error: string | null;
+}
+
+export interface SubscriptionRunSummary {
+  id: number;
+  subscription_id: number;
+  trigger: "manual" | "scheduled";
+  status: SubscriptionRunStatus;
+  total_count: number;
+  new_count: number;
+  provider_results: SubscriptionProviderResult[];
+  error_message: string | null;
+  started_at: string;
+  completed_at: string | null;
+}
+
+export interface JobSubscription {
+  id: number;
+  name: string;
+  filters: Partial<JobSearchRequest>;
+  frequency: SubscriptionFrequency;
+  schedule_time: string;
+  weekday: number | null;
+  interval_days: number | null;
+  month_day: number | null;
+  timezone: string;
+  enabled: boolean;
+  next_run_at: string | null;
+  last_run_at: string | null;
+  created_at: string;
+  updated_at: string;
+  latest_run: SubscriptionRunSummary | null;
+}
+
+export interface SubscriptionJobPreview {
+  source_job_id: string;
+  title: string;
+  company_name: string;
+  city: string;
+  district: string | null;
+  job_type: string;
+  published_date: string | null;
+  salary: SalaryInfo;
+  education: string | null;
+  internship_months: number | null;
+  days_per_week: number | null;
+  conversion_chance: string | null;
+  detail_url: string;
+  description: string | null;
+  requirements: string | null;
+  responsibilities: string | null;
+  extraction_method: string;
+  source: JobSource;
+}
+
+export interface SubscriptionRunItem {
+  id: number;
+  provider: string;
+  is_new: boolean;
+  job: SubscriptionJobPreview;
+  saved_job_id: number | null;
+}
+
+export interface SubscriptionRunDetail extends SubscriptionRunSummary {
+  items: SubscriptionRunItem[];
+  total_items: number;
+  page: number;
+  limit: number;
+  preview_expired: boolean;
+}
+
+export interface SubscriptionSaveResponse {
+  item_id: number;
+  job_id: number;
+  application_id: number;
+  already_saved: boolean;
 }
 
 export interface BossProviderStatus {
@@ -240,6 +353,71 @@ export interface ApplicationListResponse {
   total: number;
   page: number;
   limit: number;
+}
+
+export interface WorkbenchApplicationRef {
+  id: number;
+  job_id: number;
+  title: string;
+  company_name: string;
+  city: string;
+}
+
+export type TodoPriority = "high" | "normal" | "low";
+export type InterviewFormat = "online" | "in_person" | "phone" | "unknown";
+
+export interface WorkbenchTodo {
+  id: number;
+  title: string;
+  application: WorkbenchApplicationRef | null;
+  due_at: string | null;
+  priority: TodoPriority;
+  completed: boolean;
+  completed_at: string | null;
+  note: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkbenchTodoListResponse {
+  items: WorkbenchTodo[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+export interface WorkbenchInterview {
+  id: number;
+  title: string;
+  application: WorkbenchApplicationRef | null;
+  company_name: string | null;
+  position_title: string | null;
+  starts_at: string;
+  ends_at: string | null;
+  timezone: string;
+  interview_format: InterviewFormat;
+  location: string | null;
+  meeting_url: string | null;
+  note: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkbenchInterviewListResponse {
+  items: WorkbenchInterview[];
+  total: number;
+}
+
+export interface WorkbenchOverview {
+  generated_at: string;
+  application_count: number;
+  todo_open_count: number;
+  todo_overdue_count: number;
+  todo_completed_count: number;
+  interview_upcoming_count: number;
+  interview_next_7_days_count: number;
+  status_counts: Array<StatusDefinition & { count: number }>;
+  weekly_status_events: Array<{ week_start: string; count: number }>;
 }
 
 export interface ProfileFact {
@@ -407,6 +585,8 @@ export interface AgentStreamEvent {
   status?: string;
   payload?: Record<string, unknown> | null;
   error_message?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
 }
 
 export async function listAgentSessions() {

@@ -21,7 +21,7 @@ cp .env.example .env
 - `DATABASE_PATH`：SQLite 数据库文件。相对路径以项目根目录为基准，默认保存到 `data/job_analysis.db`。
 - `JOB_PROVIDER`：请求没有显式指定来源时使用的默认来源；`fixture` 仅用于离线开发。前端主动提交的来源优先。
 - `IMPORT_TIMEOUT_SECONDS`：读取公开岗位链接的时间上限，包含 JavaScript 页面渲染等待。
-- `CORS_ORIGINS`：允许访问 API 的前端地址，多个 origin 用英文逗号分隔。
+- `CORS_ORIGINS`：允许访问 API 的前端地址，多个 origin 用英文逗号分隔；默认包含 Vite 开发端口 `5175`（并兼容 `5173`）。
 - `LOG_LEVEL`：日志级别，例如 `INFO`、`WARNING`、`DEBUG`。
 
 ### BOSS 直聘 CLI

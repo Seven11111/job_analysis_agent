@@ -15,37 +15,39 @@
 
 [产品预览](#产品预览) · [功能特性](#功能特性) · [岗位来源与配置](#岗位来源与配置) · [快速开始](#快速开始) · [项目文档](#项目文档)
 
+[GitHub 仓库](https://github.com/Seven11111/job_analysis_agent)
+
 </div>
 
 > 不自动投递，不绕过招聘网站的登录、验证码或访问限制。搜索结果先临时展示，只有用户确认后才会保存。
 
 ## 🖥️ 产品预览
 
-以下是页面设计示意图；岗位、公司和日期均为演示内容，不代表当前真实搜索结果。
+以下为本地运行时的真实页面截图，页面数据为合成演示数据，不代表真实岗位或搜索结果。出于隐私考虑，这里不展示个人画像页面；截图也不包含真实简历或个人对话。
 
 <p align="center">
-  <img src="docs/assets/workbench.png" alt="求职研究工作台首页示意" width="900">
+  <img src="docs/assets/screenshots/workbench.png" alt="求职工作台：投递进度、待办和面试概览" width="900">
 </p>
 
 <table>
   <tr>
     <td align="center" width="50%">
-      <img src="docs/assets/job-search.png" alt="岗位搜索页面示意" width="100%"><br>
-      <sub>岗位搜索 · 条件筛选与来源信息</sub>
+      <img src="docs/assets/screenshots/job-search.png" alt="岗位搜索页面真实截图，使用合成演示岗位" width="100%"><br>
+      <sub>岗位搜索 · 来源、筛选与搜索结果</sub>
     </td>
     <td align="center" width="50%">
-      <img src="docs/assets/job-management.png" alt="岗位管理页面示意" width="100%"><br>
-      <sub>岗位管理 · 状态跟踪与匹配分析</sub>
+      <img src="docs/assets/screenshots/job-management.png" alt="岗位管理页面真实截图，使用合成演示岗位" width="100%"><br>
+      <sub>岗位管理 · 状态时间线与岗位详情</sub>
     </td>
   </tr>
   <tr>
     <td align="center" width="50%">
-      <img src="docs/assets/profile.png" alt="个人画像页面示意" width="100%"><br>
-      <sub>个人画像 · 求职偏好、技能、项目与简历</sub>
+      <img src="docs/assets/screenshots/job-subscriptions.png" alt="岗位订阅页面真实截图，使用合成演示数据" width="100%"><br>
+      <sub>岗位订阅 · 保存条件与查新计划</sub>
     </td>
     <td align="center" width="50%">
-      <img src="docs/assets/agent.png" alt="求职 Agent 页面示意" width="100%"><br>
-      <sub>求职 Agent · 多轮对话与岗位工具</sub>
+      <img src="docs/assets/screenshots/agent.png" alt="求职 Agent 空白会话页面真实截图" width="100%"><br>
+      <sub>求职 Agent · 新会话与工作流入口</sub>
     </td>
   </tr>
 </table>
@@ -155,7 +157,7 @@ npm install
 npm run dev
 ```
 
-- Web 页面：<http://127.0.0.1:5173>
+- Web 页面：<http://127.0.0.1:5175>
 - Swagger API 文档：<http://127.0.0.1:8100/docs>
 - 健康检查与来源状态：<http://127.0.0.1:8100/api/v1/health>
 

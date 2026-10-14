@@ -70,12 +70,17 @@ interface JobLinkPreview {
 
 const suggestions = [
   { icon: Search, label: "帮我找上海的后端实习", prompt: "帮我搜索上海的后端开发实习，优先最近一周发布的岗位。" },
+  { icon: BriefcaseBusiness, label: "搜索校招公告", prompt: "帮我搜索杭州的人工智能相关校招公告，筛选 2027 届。" },
   { icon: BriefcaseBusiness, label: "看看我的岗位进度", prompt: "查询我保存了哪些岗位，以及目前各自的状态和进度。" },
+  { icon: CalendarDays, label: "查看待办和面试", prompt: "查询我当前未完成的求职待办，以及接下来一周的面试安排。" },
   { icon: UserRound, label: "查看我的求职画像", prompt: "请读取我的求职画像，告诉我目前设定了哪些意向。" },
   { icon: FileText, label: "查看当前简历", prompt: "请查看我的当前在线简历，并指出内容覆盖了什么。" },
 ];
 
 const activityLabels: Record<string, string> = {
+  get_provider_status: "检查岗位来源与模型状态",
+  start_boss_login: "启动 BOSS 官方登录",
+  cancel_boss_login: "停止 BOSS 登录",
   preview_job_link: "读取岗位链接",
   search_jobs: "搜索实习岗位",
   list_saved_jobs: "查询已保存岗位",
@@ -90,6 +95,36 @@ const activityLabels: Record<string, string> = {
   propose_profile_update: "准备修改个人画像",
   propose_resume_update: "准备更新在线简历",
   analyze_saved_job: "分析岗位匹配度",
+  search_campus_recruit: "搜索校招资讯",
+  set_job_recommendation_feedback: "记录推荐反馈",
+  get_workbench_overview: "读取工作台统计",
+  list_todos: "查询求职待办",
+  list_interviews: "查询面试安排",
+  list_job_subscriptions: "查询岗位订阅",
+  get_job_subscription: "读取岗位订阅详情",
+  list_job_subscription_runs: "查询查新运行历史",
+  get_job_subscription_run: "读取查新结果预览",
+  run_job_subscription: "立即执行岗位查新",
+  propose_job_subscription_create: "准备创建岗位订阅",
+  propose_job_subscription_update: "准备修改岗位订阅",
+  propose_job_subscription_delete: "准备删除岗位订阅",
+  list_profile_facts: "查询画像记忆",
+  list_resume_attachments: "查询附件简历",
+  list_resume_versions: "查询在线简历版本",
+  propose_todo_create: "准备新增待办",
+  propose_todo_update: "准备修改待办",
+  propose_todo_delete: "准备删除待办",
+  propose_interview_create: "准备新增面试安排",
+  propose_interview_update: "准备修改面试安排",
+  propose_interview_delete: "准备删除面试安排",
+  propose_status_create: "准备新增投递状态",
+  propose_status_update: "准备修改投递状态",
+  propose_profile_fact_create: "准备新增画像记忆",
+  propose_profile_fact_update: "准备修改画像记忆",
+  propose_confirm_profile_facts: "准备确认画像记忆",
+  propose_confirm_resume_attachment: "准备确认附件简历",
+  propose_select_resume: "准备切换当前简历",
+  propose_delete_resume_attachment: "准备删除附件简历",
 };
 
 function localMessage(role: ChatLine["role"], content: string, localId: string): ChatLine {
@@ -162,6 +197,8 @@ interface OperationStep {
   name: string;
   status: string;
   summary: string | null;
+  parameterSummary: string | null;
+  durationMs: number | null;
   eventType: string;
 }
 
@@ -169,7 +206,8 @@ function buildOperationSteps(events: AgentRunEvent[]): OperationStep[] {
   const steps: OperationStep[] = [];
   for (const event of events) {
     if (event.event_type === "tool_started") {
-      steps.push({ id: event.id, name: event.name ?? event.event_type, status: "running", summary: null, eventType: event.event_type });
+      const parameterSummary = typeof event.payload?.parameter_summary === "string" ? event.payload.parameter_summary : null;
+      steps.push({ id: event.id, name: event.name ?? event.event_type, status: "running", summary: null, parameterSummary, durationMs: null, eventType: event.event_type });
     } else if (event.event_type === "tool_completed") {
       let pendingIndex = -1;
       for (let index = steps.length - 1; index >= 0; index -= 1) {
@@ -179,10 +217,11 @@ function buildOperationSteps(events: AgentRunEvent[]): OperationStep[] {
         }
       }
       const summary = typeof event.payload?.summary === "string" ? event.payload.summary : null;
+      const durationMs = typeof event.payload?.duration_ms === "number" ? event.payload.duration_ms : null;
       if (pendingIndex >= 0) {
-        steps[pendingIndex] = { ...steps[pendingIndex], status: event.status, summary };
+        steps[pendingIndex] = { ...steps[pendingIndex], status: event.status, summary, durationMs };
       } else {
-        steps.push({ id: event.id, name: event.name ?? event.event_type, status: event.status, summary, eventType: event.event_type });
+        steps.push({ id: event.id, name: event.name ?? event.event_type, status: event.status, summary, parameterSummary: null, durationMs, eventType: event.event_type });
       }
     } else if (event.event_type === "action_proposed") {
       const actionSummary = event.status === "pending"
@@ -197,6 +236,8 @@ function buildOperationSteps(events: AgentRunEvent[]): OperationStep[] {
         name: event.name ?? event.event_type,
         status: event.status,
         summary: actionSummary,
+        parameterSummary: null,
+        durationMs: null,
         eventType: event.event_type,
       });
     }
@@ -234,8 +275,14 @@ function OperationTrace({ steps, running, failed, cancelled }: {
                 : step.status === "rejected" ? <X size={13} className="shrink-0 text-slate-400" />
                 : step.status === "pending" ? <Pencil size={13} className="shrink-0 text-amber-500" />
                   : <Check size={13} className="shrink-0 text-emerald-600" />}
-            <span className="shrink-0 font-medium text-slate-600">{activityLabels[step.name] ?? step.name}</span>
-            {step.summary ? <span className="truncate text-slate-400">· {step.summary}</span> : null}
+            <div className="min-w-0 flex-1">
+              <div className="flex min-w-0 items-center gap-1.5">
+                <span className="shrink-0 font-medium text-slate-600">{activityLabels[step.name] ?? step.name}</span>
+                {step.summary ? <span className="truncate text-slate-400">· {step.summary}</span> : null}
+                {step.durationMs !== null ? <span className="ml-auto shrink-0 text-[10px] tabular-nums text-slate-400">{step.durationMs < 1000 ? `${step.durationMs} ms` : `${(step.durationMs / 1000).toFixed(1)} s`}</span> : null}
+              </div>
+              {step.parameterSummary ? <div className="mt-0.5 truncate text-[10px] text-slate-400">参数 · {step.parameterSummary}</div> : null}
+            </div>
           </div>
         ))}
       </div>
@@ -479,8 +526,8 @@ export function AgentPage() {
         status: event.status ?? "running",
         payload: event.payload ?? null,
         error_message: event.error_message ?? null,
-        started_at: null,
-        completed_at: null,
+        started_at: event.started_at ?? null,
+        completed_at: event.completed_at ?? null,
       };
       setEvents((current) => [...current.filter((item) => item.id !== normalized.id), normalized]);
     }
@@ -597,7 +644,7 @@ export function AgentPage() {
           ))}
         </div>
         <div className="border-t border-slate-100 px-4 py-3 text-[11px] leading-5 text-slate-400">
-          岗位、画像和简历的修改会先展示确认卡片。
+          工作台与个人数据的写入、修改和删除，都会先展示确认卡片。
         </div>
       </aside>
 
@@ -619,7 +666,7 @@ export function AgentPage() {
               <div className="mb-7 text-center">
                 <span className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-gradient-to-br from-blue-50 to-cyan-50 text-brand"><Bot size={27} strokeWidth={1.7} /></span>
                 <h2 className="mt-4 text-2xl font-semibold tracking-tight text-ink">今天想先处理什么？</h2>
-                <p className="mt-2 text-sm text-slate-500">可以聊求职，也可以让我查询岗位、投递状态、个人画像或简历。</p>
+                <p className="mt-2 text-sm text-slate-500">可以聊天，也可以搜索岗位/校招公告，管理投递、待办、面试、画像和简历。</p>
               </div>
               <div className="grid gap-2 sm:grid-cols-2">
                 {suggestions.map(({ icon: Icon, label, prompt }) => (

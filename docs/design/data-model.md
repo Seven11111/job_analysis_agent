@@ -14,6 +14,7 @@
 - 布尔值：SQLite 使用 `INTEGER` 0/1，由 SQLAlchemy 映射为 Boolean。
 - 所有外键启用索引；删除默认使用业务状态或关系解除，不级联删除岗位历史。
 - Offer 先生校招公告只作为临时搜索结果返回，不保存到 `jobs`、`job_snapshots` 或投递跟踪表；公告与具体实习岗位不是同一种业务实体。
+- 智能推荐仅对当前搜索结果做内存中的规则排序与反馈展示，不增加持久化表。推荐反馈不自动写入 `candidate_profiles`、`profile_facts` 或 `applications`；搜索结果仍需用户主动保存。
 
 ## 2. 关系总览
 
@@ -29,6 +30,10 @@ erDiagram
     resume_attachments o|--o{ resume_versions : source_for
     candidate_profiles ||--o{ profile_facts : remembers
     candidate_profiles ||--o{ applications : tracks
+    candidate_profiles ||--o{ job_todos : plans
+    candidate_profiles ||--o{ interview_events : schedules
+    applications o|--o{ job_todos : optionally_links
+    applications o|--o{ interview_events : optionally_links
     candidate_profiles ||--o{ application_status_definitions : defines
     applications }o--|| application_status_definitions : current_status
     applications ||--o{ application_status_events : changes
@@ -38,6 +43,11 @@ erDiagram
     candidate_profiles ||--o{ agent_sessions : starts
     agent_sessions ||--o{ agent_messages : contains
     agent_sessions ||--o{ agent_run_events : records
+    candidate_profiles ||--o{ job_subscriptions : configures
+    job_subscriptions ||--o{ job_subscription_runs : executes
+    job_subscriptions ||--o{ job_subscription_seen_jobs : deduplicates
+    job_subscription_runs ||--o{ job_subscription_run_items : previews
+    jobs o|--o{ job_subscription_run_items : saved_as
 ```
 
 核心关系：
@@ -52,6 +62,8 @@ candidate_profiles → resume_versions
                    → resume_attachments → resume_versions (optional source link)
                    → profile_facts
                    → applications
+                   → job_todos
+                   → interview_events
                    → job_matches
                    → agent_sessions → agent_messages / agent_run_events
 ```
@@ -281,6 +293,45 @@ education[]、campus_experiences[]、experience[]、projects[]、skills[]、cert
 
 新建收藏关系时写入一条初始状态事件；修改状态时必须同时更新 `applications.current_status_id` 和事件表，不能只改当前状态。
 
+### 5.4 `job_todos`
+
+用户主动创建的求职行动，可独立存在，也可选关联一条岗位跟踪记录。完成待办不会自动改变岗位状态。
+
+| 字段 | 类型 | 约束 | 说明 |
+|---|---|---|---|
+| `id` | INTEGER | PK | 待办 ID |
+| `profile_id` | INTEGER | FK, INDEX | 所属画像 |
+| `application_id` | INTEGER | FK, NULL, INDEX, `ON DELETE SET NULL` | 可选关联岗位；移除岗位跟踪后待办保留 |
+| `title` | VARCHAR(200) | NOT NULL | 待办内容 |
+| `due_at` | DATETIME | NULL, INDEX | 用户设置的截止时间，存储 UTC |
+| `priority` | VARCHAR(16) | NOT NULL | high、normal、low |
+| `completed` | BOOLEAN | NOT NULL | 是否完成 |
+| `completed_at` | DATETIME | NULL | 完成时间 |
+| `note` | TEXT | NULL | 备注 |
+| `created_at` / `updated_at` | DATETIME | NOT NULL | 审计时间 |
+
+### 5.5 `interview_events`
+
+用户手动记录的面试安排。面试记录不代表系统核实了招聘方通知，也不自动将岗位状态改成“面试中”。
+
+| 字段 | 类型 | 约束 | 说明 |
+|---|---|---|---|
+| `id` | INTEGER | PK | 面试安排 ID |
+| `profile_id` | INTEGER | FK, INDEX | 所属画像 |
+| `application_id` | INTEGER | FK, NULL, INDEX, `ON DELETE SET NULL` | 可选关联岗位；移除岗位跟踪后安排保留 |
+| `title` | VARCHAR(200) | NOT NULL | 轮次或安排标题 |
+| `company_name` | VARCHAR(200) | NULL | 公司，可从关联岗位补充展示 |
+| `position_title` | VARCHAR(300) | NULL | 岗位，可从关联岗位补充展示 |
+| `starts_at` / `ends_at` | DATETIME | NOT NULL / NULL | 开始、结束时间，存储 UTC |
+| `timezone` | VARCHAR(64) | NOT NULL | 默认 `Asia/Shanghai` |
+| `interview_format` | VARCHAR(24) | NOT NULL | online、in_person、phone、unknown |
+| `location` | VARCHAR(500) | NULL | 地点或会议平台 |
+| `meeting_url` | VARCHAR(1000) | NULL | 会议链接 |
+| `note` | TEXT | NULL | 备注 |
+| `created_at` / `updated_at` | DATETIME | NOT NULL | 审计时间 |
+
+索引：`(profile_id, starts_at)`，用于按用户及日历范围读取。
+
 ## 6. 分析和 Agent 域
 
 ### 6.1 `job_matches`
@@ -345,7 +396,40 @@ education[]、campus_experiences[]、experience[]、projects[]、skills[]、cert
 
 约束：`UNIQUE(run_id, sequence)`。不得保存 API Key、完整 Prompt、手机号、邮箱或详细住址。
 
-## 7. 可选本地配置表
+## 7. 岗位订阅域
+
+订阅配置与查新历史持久化；Provider 搜索结果本身保持临时态，不会因定时查新自动进入 `jobs` 或 `applications`。只有用户点击“保存到岗位管理”时，才创建或复用岗位、快照和投递跟踪。
+
+### 7.1 `job_subscriptions`
+
+| 字段 | 类型 | 约束 | 说明 |
+|---|---|---|---|
+| `id` | INTEGER | PK | 订阅 ID |
+| `profile_id` | INTEGER | FK, INDEX | 当前单用户画像 |
+| `name` | VARCHAR(120) | NOT NULL | 用户定义名称 |
+| `filters_json` | TEXT | NOT NULL | 已支持的岗位搜索条件及来源 |
+| `frequency` | VARCHAR(16) | NOT NULL | `manual`、`daily`、`weekdays`、`weekly`、`interval`、`monthly` |
+| `schedule_time` | VARCHAR(5) | NOT NULL | 北京时间 `HH:MM` |
+| `weekday` | INTEGER | NULL | 每周执行日，ISO 1–7 |
+| `interval_days` | INTEGER | NULL | 间隔查新天数，2–30 |
+| `month_day` | INTEGER | NULL | 每月执行日 1–31；短月按月末执行 |
+| `timezone` | VARCHAR(64) | NOT NULL | 固定为 `Asia/Shanghai` |
+| `enabled` | BOOLEAN | NOT NULL | 定时计划是否启用 |
+| `next_run_at` / `last_run_at` | DATETIME | NULL | UTC-naive 存储的计划和最近运行时刻 |
+| `created_at` / `updated_at` | DATETIME | NOT NULL | 审计时间 |
+
+### 7.2 `job_subscription_runs`
+
+保存触发方式、运行状态、来源状态、总结果/新结果数量、错误和开始/完成时间。状态包括 `running`、`succeeded`、`no_new`、`partial_failed`、`failed` 和 `interrupted`。
+
+### 7.3 `job_subscription_seen_jobs` / `job_subscription_run_items`
+
+- `job_subscription_seen_jobs` 仅保存 Provider 标识、稳定岗位 ID 或规范链接的 SHA-256 哈希及首次/最近发现时间；哈希键按订阅隔离，用于跨运行去重，删除订阅时一并删除。
+- `job_subscription_run_items` 保存短期展示所需的岗位结构化预览、来源和用户是否已保存；预览数据运行 30 天后清理，运行摘要与去重哈希保留到用户删除订阅为止。
+- 不存储完整 Provider 原始响应、登录凭据、Cookie 或外部通知地址。不同来源的岗位独立保留来源身份，不跨来源自动合并。
+- `no_new` 只表示来源成功且这次没有新的唯一岗位，不表示岗位已关闭。
+
+## 8. 可选本地配置表
 
 如果设置页需要持久化非敏感偏好，可以增加 `app_settings`：
 
@@ -357,7 +441,7 @@ education[]、campus_experiences[]、experience[]、projects[]、skills[]、cert
 
 模型 API Key、Provider Secret 不写入该表，第一版继续使用 `.env` 或本地安全配置。没有设置页持久化需求时，可以不创建此表。
 
-## 8. 关键业务约束
+## 9. 关键业务约束
 
 1. 搜索结果可以写入 `jobs`，但只有用户点击收藏才创建 `applications`。
 2. `published_date` 只代表来源发布日期；最近 N 天筛选不能使用 `fetched_at` 或 `created_at` 代替。

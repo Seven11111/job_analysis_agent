@@ -10,6 +10,8 @@ from api.v1.endpoints.providers import router as providers_router
 from api.v1.endpoints.matches import router as matches_router
 from api.v1.endpoints.agent import router as agent_router
 from api.v1.endpoints.campus_recruit import router as campus_recruit_router
+from api.v1.endpoints.workbench import router as workbench_router
+from api.v1.endpoints.subscriptions import router as subscriptions_router
 
 router = APIRouter()
 router.include_router(health_router)
@@ -20,3 +22,5 @@ router.include_router(providers_router)
 router.include_router(matches_router)
 router.include_router(agent_router)
 router.include_router(campus_recruit_router)
+router.include_router(workbench_router)
+router.include_router(subscriptions_router)

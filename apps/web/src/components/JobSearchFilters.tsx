@@ -8,7 +8,7 @@ export function MultiSelect({ label, values, options, onToggle }: { label: strin
   return <details className="group relative"><summary className="flex h-12 cursor-pointer list-none items-center justify-between rounded-xl border border-slate-200 bg-[#fbfdff] px-4 text-sm text-ink outline-none transition hover:border-brand/60"><span className="truncate">{display}</span><span className="ml-3 text-slate-400">⌄</span></summary><div className="absolute left-0 top-14 z-30 min-w-full rounded-2xl border border-slate-200 bg-white p-2 shadow-[0_18px_45px_rgba(24,64,96,0.16)]">{options.map(([value, text]) => <label key={value} className="flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-sm hover:bg-blue-50"><input type="checkbox" checked={values.includes(value)} onChange={() => onToggle(value)} className="h-4 w-4 accent-[#1688d8]" />{text}</label>)}</div></details>;
 }
 
-export function CityPicker({ values, onChange }: { values: string[]; onChange: (cities: string[]) => void }) {
+export function CityPicker({ values, onChange, label = "工作城市" }: { values: string[]; onChange: (cities: string[]) => void; label?: string }) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState(values);
   const [query, setQuery] = useState("");
@@ -52,7 +52,7 @@ export function CityPicker({ values, onChange }: { values: string[]; onChange: (
   return <>
     <div className="rounded-2xl border border-slate-200/90 bg-[#fbfdff] px-4 py-4">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
-        <div className="min-w-24"><p className="text-xs font-semibold tracking-wide text-slate-500">工作城市</p><p className="mt-1 text-xs text-slate-400">{values.length ? `已选 ${values.length} 个` : "全国范围"}</p></div>
+        <div className="min-w-24"><p className="text-xs font-semibold tracking-wide text-slate-500">{label}</p><p className="mt-1 text-xs text-slate-400">{values.length ? `已选 ${values.length} 个` : "全国范围"}</p></div>
         <div className="flex min-w-0 flex-1 flex-wrap gap-2">
           <button type="button" onClick={() => onChange([])} className={`rounded-full px-3 py-1.5 text-sm transition ${values.length === 0 ? "bg-ink text-white" : "bg-white text-slate-600 hover:bg-blue-50"}`}>全国</button>
           {quickCityOptions.map((city) => <button key={city} type="button" onClick={() => toggleQuickCity(city)} disabled={!values.includes(city) && values.length >= 10} className={`rounded-full px-3 py-1.5 text-sm transition disabled:cursor-not-allowed disabled:opacity-40 ${values.includes(city) ? "bg-blue-100 font-medium text-brand" : "bg-white text-slate-600 hover:bg-blue-50"}`}>{city}</button>)}
@@ -64,7 +64,7 @@ export function CityPicker({ values, onChange }: { values: string[]; onChange: (
     {open && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-[2px]" onMouseDown={(event) => { if (event.target === event.currentTarget) setOpen(false); }}>
       <div role="dialog" aria-modal="true" aria-labelledby="city-picker-title" className="flex max-h-[calc(100dvh-2rem)] w-full max-w-4xl flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-[0_28px_90px_rgba(12,36,70,0.28)]">
         <div className="flex shrink-0 items-start justify-between border-b border-slate-100 px-6 py-5">
-          <div><p className="text-xs font-semibold uppercase tracking-[0.2em] text-brand">LOCATION FILTER</p><h2 id="city-picker-title" className="mt-1 text-xl font-semibold text-ink">选择工作城市</h2><p className="mt-1 text-sm text-slate-500">按省份查看市级行政区划（含自治州、盟和地区），可跨省多选，最多 10 个。</p></div>
+          <div><p className="text-xs font-semibold uppercase tracking-[0.2em] text-brand">LOCATION FILTER</p><h2 id="city-picker-title" className="mt-1 text-xl font-semibold text-ink">选择{label}</h2><p className="mt-1 text-sm text-slate-500">按省份查看市级行政区划（含自治州、盟和地区），可跨省多选，最多 10 个。</p></div>
           <button type="button" onClick={() => setOpen(false)} aria-label="关闭城市选择" className="rounded-full p-2 text-slate-400 transition hover:bg-slate-100 hover:text-ink"><X size={19} /></button>
         </div>
         <div className="shrink-0 px-6 pt-5">

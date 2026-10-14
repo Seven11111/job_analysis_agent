@@ -128,8 +128,15 @@ class CandidateProfile(TimestampMixin, Base):
     status_definitions: Mapped[list["ApplicationStatusDefinition"]] = relationship(
         back_populates="profile", cascade="all, delete-orphan"
     )
+    todos: Mapped[list["JobTodo"]] = relationship(back_populates="profile", cascade="all, delete-orphan")
+    interviews: Mapped[list["InterviewEvent"]] = relationship(
+        back_populates="profile", cascade="all, delete-orphan"
+    )
     matches: Mapped[list["JobMatch"]] = relationship(back_populates="profile")
     sessions: Mapped[list["AgentSession"]] = relationship(back_populates="profile", cascade="all, delete-orphan")
+    job_subscriptions: Mapped[list["JobSubscription"]] = relationship(
+        back_populates="profile", cascade="all, delete-orphan"
+    )
 
 
 class ResumeVersion(TimestampMixin, Base):
@@ -206,6 +213,8 @@ class Application(TimestampMixin, Base):
     status_events: Mapped[list["ApplicationStatusEvent"]] = relationship(
         back_populates="application", cascade="all, delete-orphan"
     )
+    todos: Mapped[list["JobTodo"]] = relationship(back_populates="application")
+    interviews: Mapped[list["InterviewEvent"]] = relationship(back_populates="application")
 
 
 class ApplicationStatusDefinition(TimestampMixin, Base):
@@ -243,6 +252,49 @@ class ApplicationStatusEvent(Base):
     to_status: Mapped[ApplicationStatusDefinition] = relationship(
         foreign_keys=[to_status_id]
     )
+
+
+class JobTodo(TimestampMixin, Base):
+    __tablename__ = "job_todos"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    profile_id: Mapped[int] = mapped_column(ForeignKey("candidate_profiles.id"), nullable=False, index=True)
+    application_id: Mapped[int | None] = mapped_column(
+        ForeignKey("applications.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    priority: Mapped[str] = mapped_column(String(16), nullable=False, default="normal")
+    completed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    note: Mapped[str | None] = mapped_column(Text)
+
+    profile: Mapped[CandidateProfile] = relationship(back_populates="todos")
+    application: Mapped[Application | None] = relationship(back_populates="todos")
+
+
+class InterviewEvent(TimestampMixin, Base):
+    __tablename__ = "interview_events"
+    __table_args__ = (Index("ix_interview_events_profile_starts_at", "profile_id", "starts_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    profile_id: Mapped[int] = mapped_column(ForeignKey("candidate_profiles.id"), nullable=False, index=True)
+    application_id: Mapped[int | None] = mapped_column(
+        ForeignKey("applications.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    company_name: Mapped[str | None] = mapped_column(String(200))
+    position_title: Mapped[str | None] = mapped_column(String(300))
+    starts_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    ends_at: Mapped[datetime | None] = mapped_column(DateTime)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="Asia/Shanghai")
+    interview_format: Mapped[str] = mapped_column(String(24), nullable=False, default="unknown")
+    location: Mapped[str | None] = mapped_column(String(500))
+    meeting_url: Mapped[str | None] = mapped_column(String(1000))
+    note: Mapped[str | None] = mapped_column(Text)
+
+    profile: Mapped[CandidateProfile] = relationship(back_populates="interviews")
+    application: Mapped[Application | None] = relationship(back_populates="interviews")
 
 
 class JobMatch(Base):
@@ -323,3 +375,96 @@ class AppSetting(Base):
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
     value_json: Mapped[str] = mapped_column(Text, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class JobSubscription(TimestampMixin, Base):
+    __tablename__ = "job_subscriptions"
+    __table_args__ = (Index("ix_job_subscriptions_enabled_next_run", "enabled", "next_run_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    profile_id: Mapped[int] = mapped_column(ForeignKey("candidate_profiles.id"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    filters_json: Mapped[str] = mapped_column(Text, nullable=False)
+    frequency: Mapped[str] = mapped_column(String(16), nullable=False, default="manual")
+    schedule_time: Mapped[str] = mapped_column(String(5), nullable=False, default="09:00")
+    weekday: Mapped[int | None] = mapped_column(Integer)
+    interval_days: Mapped[int | None] = mapped_column(Integer)
+    month_day: Mapped[int | None] = mapped_column(Integer)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="Asia/Shanghai")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    profile: Mapped[CandidateProfile] = relationship(back_populates="job_subscriptions")
+    runs: Mapped[list["JobSubscriptionRun"]] = relationship(
+        back_populates="subscription", cascade="all, delete-orphan"
+    )
+    seen_jobs: Mapped[list["JobSubscriptionSeenJob"]] = relationship(
+        back_populates="subscription", cascade="all, delete-orphan"
+    )
+
+
+class JobSubscriptionRun(Base):
+    __tablename__ = "job_subscription_runs"
+    __table_args__ = (Index("ix_job_subscription_runs_subscription_started", "subscription_id", "started_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    subscription_id: Mapped[int] = mapped_column(
+        ForeignKey("job_subscriptions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    trigger: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="running")
+    total_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    new_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    provider_results_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    error_message: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    subscription: Mapped[JobSubscription] = relationship(back_populates="runs")
+    items: Mapped[list["JobSubscriptionRunItem"]] = relationship(
+        back_populates="run", cascade="all, delete-orphan"
+    )
+
+
+class JobSubscriptionSeenJob(Base):
+    """Minimal stable keys retained so previously surfaced jobs are not announced again."""
+
+    __tablename__ = "job_subscription_seen_jobs"
+    __table_args__ = (
+        UniqueConstraint("subscription_id", "provider", "identity_hash", name="uq_subscription_seen_identity"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    subscription_id: Mapped[int] = mapped_column(
+        ForeignKey("job_subscriptions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    identity_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+    subscription: Mapped[JobSubscription] = relationship(back_populates="seen_jobs")
+
+
+class JobSubscriptionRunItem(Base):
+    """Short-lived display payload for one provider result in one subscription run."""
+
+    __tablename__ = "job_subscription_run_items"
+    __table_args__ = (
+        UniqueConstraint("run_id", "provider", "identity_hash", name="uq_subscription_run_item_identity"),
+        Index("ix_subscription_run_items_run_new", "run_id", "is_new"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("job_subscription_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    identity_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    is_new: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    job_json: Mapped[str] = mapped_column(Text, nullable=False)
+    saved_job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id"), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+    run: Mapped[JobSubscriptionRun] = relationship(back_populates="items")

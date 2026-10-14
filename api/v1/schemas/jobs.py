@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field, model_validator
 
 PublishedRange = Literal["all", "1d", "3d", "7d", "30d"]
 SalaryMode = Literal["any", "disclosed_only", "minimum"]
+JobSortBy = Literal["recommended", "newest"]
+RecommendationFeedback = Literal["interested", "not_interested"]
 
 
 class JobSearchRequest(BaseModel):
@@ -26,6 +28,7 @@ class JobSearchRequest(BaseModel):
     days_per_week: int | None = Field(default=None, ge=1, le=7)
     conversion_chance: str | None = Field(default=None, max_length=32)
     providers: list[str] = Field(default_factory=list)
+    sort_by: JobSortBy = "recommended"
     page: int = Field(default=1, ge=1)
     limit: int = Field(default=20, ge=1, le=100)
 
@@ -58,6 +61,23 @@ class SourceResponse(BaseModel):
     terms_url: str | None = None
 
 
+class JobRecommendationResponse(BaseModel):
+    score: int | None
+    label: str
+    matched_points: list[str]
+    missing_points: list[str]
+    unknown_points: list[str]
+    feedback: RecommendationFeedback | None = None
+
+
+class RecommendationContextResponse(BaseModel):
+    sort_by: JobSortBy
+    personalized: bool
+    profile_used: bool
+    resume_used: bool
+    message: str
+
+
 class JobSummaryResponse(BaseModel):
     id: int | None
     result_token: str | None = None
@@ -78,6 +98,7 @@ class JobSummaryResponse(BaseModel):
     is_saved: bool = False
     application: dict | None = None
     latest_match: dict | None = None
+    recommendation: JobRecommendationResponse | None = None
 
 
 class JobDetailResponse(JobSummaryResponse):
@@ -136,3 +157,14 @@ class JobSearchResponse(BaseModel):
     page: int
     limit: int
     quality: SearchQuality
+    recommendation_context: RecommendationContextResponse
+
+
+class RecommendationFeedbackRequest(BaseModel):
+    feedback: RecommendationFeedback | None
+
+
+class RecommendationFeedbackResponse(BaseModel):
+    result_token: str
+    feedback: RecommendationFeedback | None
+    message: str

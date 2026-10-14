@@ -471,3 +471,8 @@ class BossLoginService:
     def _finish(run: LoginRun, status: str, message: str, *, event_type: str) -> None:
         run.ended_at = datetime.now(timezone.utc)
         run.add_event(event_type, status=status, message=message)
+
+
+# The web API and Agent share the same in-memory login run so the existing
+# status/SSE endpoints can observe a login started from either entry point.
+boss_login_service = BossLoginService()

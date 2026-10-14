@@ -11,6 +11,8 @@ from api.v1.schemas.jobs import (
     JobImportPreviewResponse,
     JobSearchRequest,
     JobSearchResponse,
+    RecommendationFeedbackRequest,
+    RecommendationFeedbackResponse,
 )
 from src.services.job_service import (
     InvalidImport,
@@ -81,6 +83,24 @@ def confirm_job_import(
 def get_search_result(result_token: str) -> dict:
     try:
         return service.get_search_result(result_token)
+    except SearchResultNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "search_result_expired", "message": str(exc)},
+        ) from exc
+
+
+@router.put(
+    "/search-results/{result_token}/feedback",
+    response_model=RecommendationFeedbackResponse,
+    summary="更新临时搜索结果的推荐反馈",
+)
+def update_search_result_feedback(
+    result_token: str,
+    request: RecommendationFeedbackRequest,
+) -> dict:
+    try:
+        return service.set_recommendation_feedback(result_token, request.feedback)
     except SearchResultNotFound as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

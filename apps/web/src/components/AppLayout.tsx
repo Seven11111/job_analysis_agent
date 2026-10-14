@@ -1,9 +1,10 @@
-import { Bot, BriefcaseBusiness, FileSearch, Home, UserRound } from "lucide-react";
+import { BellRing, Bot, BriefcaseBusiness, FileSearch, Home, UserRound } from "lucide-react";
 import { NavLink, Outlet } from "react-router-dom";
 
 const navigation = [
   { to: "/", label: "工作台", icon: Home, end: true },
   { to: "/jobs/search", label: "岗位搜索", icon: FileSearch },
+  { to: "/jobs/subscriptions", label: "岗位查新", icon: BellRing },
   { to: "/jobs/manage", label: "岗位管理", icon: BriefcaseBusiness },
   { to: "/profile", label: "个人画像", icon: UserRound },
   { to: "/agent", label: "求职 Agent", icon: Bot },

@@ -60,9 +60,9 @@ def decode_sse(text):
     return decoded
 
 
-def start_stream_until_action(engine, message):
+def start_stream_until_action(engine, message, *, search_providers=None):
     db = Session(engine)
-    stream = agent_endpoints.service.stream(db, message=message)
+    stream = agent_endpoints.service.stream(db, message=message, search_providers=search_providers)
     events = []
     while True:
         try:
@@ -89,6 +89,7 @@ def setup_agent(*, adapter=None):
 
     agent_endpoints.service = AgentService(settings=Settings(litellm_model="test/mock"))
     agent_endpoints.service.job_service = JobSearchService(settings=Settings(job_provider="fixture"))
+    agent_endpoints.service.subscription_service.search_service = agent_endpoints.service.job_service
     if adapter is not None:
         agent_endpoints.service.llm_adapter = adapter
 
@@ -703,3 +704,335 @@ def test_agent_masks_sensitive_data_returned_from_local_tools_before_model_use(t
 
     assert second_response.status_code == 200
     assert "13800138000" not in json.dumps(follow_up_capture["messages"], ensure_ascii=False)
+
+
+def test_agent_workbench_todo_write_requires_confirmation(tmp_path):
+    setup_agent(adapter=ScriptedAgentAdapter(
+        first=tool_chunks("propose_todo_create", {
+            "title": "准备技术面试",
+            "due_at": "2026-10-15T20:00:00+08:00",
+            "priority": "high",
+            "note": "复习项目介绍",
+        }),
+    ))
+    client, engine = make_client(tmp_path)
+
+    db, stream, _, proposal = start_stream_until_action(engine, "新增一个周四晚上的高优先级待办，准备技术面试")
+    assert proposal["status"] == "pending"
+    assert client.get("/api/v1/workbench/todos").json()["total"] == 0
+
+    confirmed = client.post(f"/api/v1/agent/actions/{proposal['id']}/resolve", json={"confirm": True})
+    finish_stream(stream)
+    db.close()
+
+    assert confirmed.status_code == 200
+    todos = client.get("/api/v1/workbench/todos").json()
+    assert todos["total"] == 1
+    assert todos["items"][0]["title"] == "准备技术面试"
+    assert todos["items"][0]["priority"] == "high"
+
+
+def test_agent_subscription_create_is_source_scoped_and_waits_for_confirmation(tmp_path):
+    setup_agent(adapter=ScriptedAgentAdapter(first=tool_chunks("propose_job_subscription_create", {
+        "name": "杭州 Agent 查新",
+        "keyword": "Agent 开发",
+        "company": "13800138000",
+        "cities": ["杭州"],
+        "frequency": "daily",
+        "schedule_time": "08:35",
+    })))
+    client, engine = make_client(tmp_path)
+
+    db, stream, streamed_events, proposal = start_stream_until_action(
+        engine,
+        "每天早上 8:35 查找杭州 Agent 开发实习并保存条件",
+        search_providers=["job_pro"],
+    )
+    started = next(payload for name, payload in streamed_events if name == "tool_started")
+    assert "杭州" in started["payload"]["parameter_summary"]
+    assert "13800138000" not in started["payload"]["parameter_summary"]
+    assert "duration_ms" not in started["payload"]
+    assert client.get("/api/v1/subscriptions").json()["items"] == []
+    assert proposal["payload"]["action_type"] == "create_job_subscription"
+    assert proposal["payload"]["preview"]["运行时间"] == "08:35（北京时间）"
+
+    confirmed = client.post(f"/api/v1/agent/actions/{proposal['id']}/resolve", json={"confirm": True})
+    completed_events = finish_stream(stream)
+    db.close()
+
+    assert confirmed.status_code == 200
+    assert confirmed.json()["status"] == "succeeded"
+    completed = next(payload for name, payload in completed_events if name == "tool_completed")
+    assert completed["payload"]["duration_ms"] >= 0
+    saved = client.get("/api/v1/subscriptions").json()["items"]
+    assert len(saved) == 1
+    assert saved[0]["filters"]["providers"] == ["job_pro"]
+    assert saved[0]["filters"]["cities"] == ["杭州"]
+    assert saved[0]["schedule_time"] == "08:35"
+
+
+def test_agent_subscription_update_is_confirmed_before_pause(tmp_path):
+    setup_agent(adapter=ScriptedAgentAdapter(first=tool_chunks("propose_job_subscription_update", {
+        "subscription_id": 1,
+        "enabled": False,
+    })))
+    client, engine = make_client(tmp_path)
+    created = client.post("/api/v1/subscriptions", json={
+        "name": "杭州 Agent 查新",
+        "filters": {"keyword": "Agent", "cities": ["杭州"], "providers": ["job_pro"]},
+        "frequency": "daily",
+        "schedule_time": "09:10",
+    })
+    assert created.status_code == 201, created.text
+
+    db, stream, _, proposal = start_stream_until_action(engine, "暂停岗位查新 1")
+    assert client.get("/api/v1/subscriptions/1").json()["enabled"] is True
+    assert proposal["payload"]["action_type"] == "update_job_subscription"
+
+    confirmed = client.post(f"/api/v1/agent/actions/{proposal['id']}/resolve", json={"confirm": True})
+    finish_stream(stream)
+    db.close()
+
+    assert confirmed.status_code == 200
+    assert confirmed.json()["status"] == "succeeded"
+    updated = client.get("/api/v1/subscriptions/1").json()
+    assert updated["enabled"] is False
+    assert updated["next_run_at"] is None
+
+
+def test_agent_can_read_and_manually_run_subscription_without_saving_jobs(tmp_path):
+    from datetime import date
+
+    from src.data_provider.base import JobRecord
+
+    class Provider:
+        def search(self, *, keyword=None, city=None, company=None):
+            return [JobRecord(
+                source_job_id="agent-subscription-result-1",
+                title="Agent 开发实习生",
+                company_name="示例科技",
+                city="杭州",
+                detail_url="https://jobs.example.com/agent-subscription-result-1",
+                published_date=date(2026, 10, 13),
+                salary_status="unknown",
+                extraction_method="provider_api",
+            )]
+
+    setup_agent(adapter=ScriptedAgentAdapter(first=tool_chunks("run_job_subscription", {"subscription_id": 1})))
+    client, engine = make_client(tmp_path)
+    created = client.post("/api/v1/subscriptions", json={
+        "name": "杭州 Agent 查新",
+        "filters": {"keyword": "Agent", "cities": ["杭州"], "providers": ["job_pro"]},
+    })
+    assert created.status_code == 201, created.text
+    agent_endpoints.service.subscription_service.search_service.providers["job_pro"] = Provider()
+
+    response = client.post("/api/v1/agent/chat/stream", json={"message": "立即执行岗位查新 1"})
+    events = decode_sse(response.text)
+    completed = next(payload["payload"] for name, payload in events if name == "tool_completed")
+
+    assert response.status_code == 200
+    assert completed["tool"] == "run_job_subscription"
+    assert completed["result"]["new_count"] == 1
+    assert "没有保存到岗位管理" in completed["result"]["summary"]
+    run_id = completed["result"]["id"]
+    with engine.connect() as connection:
+        assert connection.exec_driver_sql("SELECT COUNT(*) FROM jobs").scalar_one() == 0
+        assert connection.exec_driver_sql("SELECT COUNT(*) FROM job_subscription_runs").scalar_one() == 1
+
+    def run_agent_tool(name, arguments):
+        agent_endpoints.service.llm_adapter = ScriptedAgentAdapter(first=tool_chunks(name, arguments))
+        response = client.post("/api/v1/agent/chat/stream", json={"message": f"查询岗位订阅：{name}"})
+        assert response.status_code == 200
+        event = next(payload for event_name, payload in decode_sse(response.text) if event_name == "tool_completed")
+        return event["payload"]["result"]
+
+    listed = run_agent_tool("list_job_subscriptions", {})
+    detailed = run_agent_tool("get_job_subscription", {"subscription_id": 1})
+    runs = run_agent_tool("list_job_subscription_runs", {"subscription_id": 1})
+    run_detail = run_agent_tool("get_job_subscription_run", {"subscription_id": 1, "run_id": run_id})
+    assert listed["total"] == 1
+    assert detailed["subscription"]["filters"]["cities"] == ["杭州"]
+    assert runs["total"] == 1 and runs["items"][0]["id"] == run_id
+    assert run_detail["total_items"] == 1
+    assert run_detail["items"][0]["job"]["title"] == "Agent 开发实习生"
+
+
+def test_agent_subscription_delete_waits_for_confirmation_and_preserves_saved_jobs(tmp_path):
+    from test_applications import seed_job
+
+    setup_agent(adapter=ScriptedAgentAdapter(first=tool_chunks("propose_job_subscription_delete", {"subscription_id": 1})))
+    client, engine = make_client(tmp_path)
+    subscription = client.post("/api/v1/subscriptions", json={
+        "name": "待删除查新",
+        "filters": {"keyword": "Agent", "cities": ["杭州"], "providers": ["job_pro"]},
+    })
+    assert subscription.status_code == 201, subscription.text
+    job_id = seed_job(client)
+    application = client.post("/api/v1/applications", json={"job_id": job_id})
+    assert application.status_code == 200
+
+    db, stream, _, proposal = start_stream_until_action(engine, "删除岗位查新 1")
+    assert len(client.get("/api/v1/subscriptions").json()["items"]) == 1
+    assert proposal["payload"]["action_type"] == "delete_job_subscription"
+    assert "已保存到岗位管理的岗位" in proposal["payload"]["preview"]["保留"]
+
+    confirmed = client.post(f"/api/v1/agent/actions/{proposal['id']}/resolve", json={"confirm": True})
+    finish_stream(stream)
+    db.close()
+
+    assert confirmed.status_code == 200
+    assert confirmed.json()["status"] == "succeeded"
+    assert client.get("/api/v1/subscriptions").json()["items"] == []
+    assert client.get("/api/v1/applications/{application_id}".format(application_id=application.json()["id"])).status_code == 200
+
+
+def test_rejected_agent_subscription_delete_keeps_configuration(tmp_path):
+    setup_agent(adapter=ScriptedAgentAdapter(first=tool_chunks("propose_job_subscription_delete", {"subscription_id": 1})))
+    client, engine = make_client(tmp_path)
+    subscription = client.post("/api/v1/subscriptions", json={
+        "name": "保留查新",
+        "filters": {"keyword": "Agent", "cities": ["杭州"], "providers": ["job_pro"]},
+    })
+    assert subscription.status_code == 201, subscription.text
+
+    db, stream, _, proposal = start_stream_until_action(engine, "删除岗位查新 1")
+    rejected = client.post(f"/api/v1/agent/actions/{proposal['id']}/resolve", json={"confirm": False})
+    finish_stream(stream)
+    db.close()
+
+    assert rejected.status_code == 200
+    assert rejected.json()["status"] == "rejected"
+    assert len(client.get("/api/v1/subscriptions").json()["items"]) == 1
+
+
+def test_agent_can_search_campus_recruit_notices_without_persisting_them(tmp_path):
+    class CampusSpy:
+        def search(self, request):
+            return {
+                "items": [{
+                    "id": "notice-1", "company_name": "示例科技", "recruit_info_name": "2027 校招公告",
+                    "graduation_year": 2027, "recruitment_batch": "秋招", "industry": "人工智能",
+                    "position_categories": ["算法"], "cities": ["杭州"],
+                    "application_start_date": "2026-09-01", "application_end_date": "2026-11-30",
+                    "domestic_education": "本科及以上", "announcement_url": "https://example.com/notice",
+                    "application_url": None, "content": "面向 2027 届毕业生招聘。", "updated_at": "2026-10-12",
+                }],
+                "count": 1,
+                "has_more": False,
+                "next_cursor": None,
+                "source": {"name": "Offer 先生校招资讯"},
+            }
+
+    setup_agent(adapter=ScriptedAgentAdapter(first=tool_chunks("search_campus_recruit", {
+        "keyword": "人工智能", "cities": ["杭州"], "graduation_year": 2027, "limit": 5,
+    })))
+    agent_endpoints.service.campus_recruit_service = CampusSpy()
+    client, _ = make_client(tmp_path)
+
+    response = client.post("/api/v1/agent/chat/stream", json={"message": "查一下杭州 2027 届人工智能校招"})
+    events = decode_sse(response.text)
+    result = next(item["payload"]["result"] for name, item in events if name == "tool_completed")
+
+    assert response.status_code == 200
+    assert result["source"] == "Offer 先生校招资讯"
+    assert result["items"][0]["company"] == "示例科技"
+    assert client.get("/api/v1/applications").json()["total"] == 0
+
+
+def test_agent_tool_directory_exposes_workbench_and_recommendation_capabilities(tmp_path):
+    setup_agent(adapter=ScriptedAgentAdapter(first=text_chunks("好的。")))
+    client, _ = make_client(tmp_path)
+    names = {item["name"] for item in client.get("/api/v1/agent/tools").json()}
+
+    assert {"get_workbench_overview", "list_todos", "list_interviews", "search_campus_recruit", "set_job_recommendation_feedback"} <= names
+    assert {"get_provider_status", "start_boss_login", "cancel_boss_login"} <= names
+    assert {"propose_todo_create", "propose_interview_create", "propose_confirm_resume_attachment", "propose_profile_fact_update"} <= names
+
+
+def test_agent_search_results_support_requested_page_and_expose_page_metadata(tmp_path):
+    from datetime import date
+    from src.data_provider.base import JobRecord
+    from api.v1.schemas.jobs import JobSearchRequest
+
+    class PagedProvider:
+        def search(self, *, keyword=None, city=None):
+            return [JobRecord(
+                source_job_id=f"page-{index}", title=f"Agent 实习生 {index}", company_name="示例科技",
+                city="杭州", detail_url=f"https://example.com/jobs/{index}", published_date=date(2026, 10, index),
+            ) for index in range(1, 4)]
+
+    setup_agent(adapter=ScriptedAgentAdapter(first=tool_chunks("search_jobs", {
+        "keyword": "Agent", "providers": ["job_pro"], "sort_by": "newest", "page": 2, "limit": 2,
+    })))
+    service = JobSearchService(providers={"job_pro": PagedProvider()}, settings=Settings(job_provider="job_pro"))
+    agent_endpoints.service.job_service = service
+    client, engine = make_client(tmp_path)
+    db = Session(engine)
+    service.search(db, JobSearchRequest.model_validate({
+        "keyword": "Agent", "providers": ["job_pro"], "page": 1, "limit": 2,
+    }))
+    db.close()
+
+    response = client.post("/api/v1/agent/chat/stream", json={
+        "message": "看第 2 页", "search_providers": ["job_pro"],
+    })
+    completed = next(item["payload"]["result"] for name, item in decode_sse(response.text) if name == "tool_completed")
+    assert response.status_code == 200
+    assert completed["page"] == 2
+    assert completed["total_pages"] == 2
+    assert completed["recommendation_context"]["sort_by"] == "newest"
+    # Search results are sorted newest-first, so the oldest record is on page 2.
+    assert [item["title"] for item in completed["items"]] == ["Agent 实习生 1"]
+
+
+def test_agent_interview_create_waits_for_confirmation_and_keeps_timezone(tmp_path):
+    setup_agent(adapter=ScriptedAgentAdapter(first=tool_chunks("propose_interview_create", {
+        "title": "小红书 Agent 开发一面",
+        "company_name": "小红书",
+        "position_title": "Agent 开发实习生",
+        "starts_at": "2026-10-20T14:00:00+08:00",
+        "ends_at": "2026-10-20T15:00:00+08:00",
+        "timezone": "Asia/Shanghai",
+        "interview_format": "online",
+    })))
+    client, engine = make_client(tmp_path)
+
+    db, stream, _, proposal = start_stream_until_action(engine, "新增 10 月 20 日下午两点的一面")
+    assert client.get("/api/v1/workbench/interviews").json()["total"] == 0
+    confirmed = client.post(f"/api/v1/agent/actions/{proposal['id']}/resolve", json={"confirm": True})
+    finish_stream(stream)
+    db.close()
+
+    assert confirmed.status_code == 200
+    interview = client.get("/api/v1/workbench/interviews").json()["items"][0]
+    assert interview["title"] == "小红书 Agent 开发一面"
+    assert interview["starts_at"].startswith("2026-10-20T06:00:00")
+    assert interview["timezone"] == "Asia/Shanghai"
+
+
+def test_agent_provider_status_does_not_expose_llm_credentials(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import src.services.agent_service as agent_service_module
+
+    monkeypatch.setattr(agent_service_module, "boss_login_service", SimpleNamespace(status=lambda: {
+        "installed": True, "authenticated": False, "status": "login_required",
+        "message": "需要在官方页面登录", "active_login_id": None,
+    }))
+    setup_agent(adapter=ScriptedAgentAdapter(first=tool_chunks("get_provider_status", {})))
+    agent_endpoints.service.settings = Settings(
+        litellm_provider="openai", litellm_model="openai/test", openai_api_key="never-return-this-key",
+        job_pro_companies="xiaohongshu",
+    )
+    client, _ = make_client(tmp_path)
+
+    response = client.post("/api/v1/agent/chat/stream", json={
+        "message": "检查一下岗位来源和模型配置", "search_providers": ["job_pro"],
+    })
+    result = next(item["payload"]["result"] for name, item in decode_sse(response.text) if name == "tool_completed")
+
+    assert response.status_code == 200
+    assert result["llm"]["configured"] is True
+    assert result["internship_sources"][0]["status"] == "login_required"
+    assert result["internship_sources"][1]["selected_in_job_search"] is True
+    assert "never-return-this-key" not in json.dumps(result, ensure_ascii=False)

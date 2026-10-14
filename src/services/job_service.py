@@ -24,6 +24,7 @@ from src.llm.litellm_adapter import LiteLLMAdapter
 from src.repositories.job_repository import JobRepository
 from src.schemas.job_import import JobPageExtraction
 from src.services.privacy import mask_sensitive_text
+from src.services.job_recommendation import JobRecommendationService
 
 
 class JobProviderUnavailable(Exception):
@@ -51,6 +52,8 @@ class CachedJob:
     source_type: str
     authorization_mode: str
     terms_url: str | None = None
+    recommendation: dict | None = None
+    feedback: str | None = None
 
 
 @dataclass(frozen=True)
@@ -89,6 +92,7 @@ class JobSearchService:
         }
         self.import_provider = ManualImportProvider(self.settings)
         self.llm_adapter = llm_adapter or LiteLLMAdapter(self.settings)
+        self.recommendation_service = JobRecommendationService()
         self._cache: dict[str, CachedJob] = {}
         self._search_cache: dict[tuple[str, str, tuple[str, ...], tuple[str, ...]], CachedSearch] = {}
 
@@ -202,8 +206,31 @@ class JobSearchService:
         if provider_names_to_query:
             self._remember_search(cache_key, records, provider_quality)
 
+        recommendation_context = self.recommendation_service.load_context(session)
+        recommendation_summary = self.recommendation_service.describe_context(recommendation_context, request)
+        enriched_records: list[CachedJob] = []
+        for item in records:
+            analysis = self.recommendation_service.analyze(item.record, recommendation_context, request)
+            analysis["feedback"] = item.feedback
+            enriched = replace(item, recommendation=analysis)
+            self._cache[item.token] = enriched
+            enriched_records.append(enriched)
+        records = enriched_records
+
         filtered = [item for item in records if self.matches_request(item.record, request)]
-        filtered.sort(key=lambda item: item.record.published_date or date.min, reverse=True)
+        if request.sort_by == "recommended":
+            filtered.sort(
+                key=lambda item: (
+                    {"interested": 1, None: 0, "not_interested": -1}.get(item.feedback, 0),
+                    (item.recommendation.get("score") if item.recommendation else -1)
+                    if self.recommendation_service.has_usable_context(recommendation_context, request)
+                    else -1,
+                    item.record.published_date or date.min,
+                ),
+                reverse=True,
+            )
+        else:
+            filtered.sort(key=lambda item: item.record.published_date or date.min, reverse=True)
         start = (request.page - 1) * request.limit
         page_items = filtered[start : start + request.limit]
         return {
@@ -216,6 +243,25 @@ class JobSearchService:
                 "missing_published_date_count": sum(item.record.published_date is None for item in filtered),
                 "providers": provider_quality,
             },
+            "recommendation_context": recommendation_summary,
+        }
+
+    def set_recommendation_feedback(self, token: str, feedback: str | None) -> dict:
+        cached = self._cache.get(token)
+        if cached is None:
+            raise SearchResultNotFound("搜索结果已过期，请重新搜索")
+        recommendation = dict(cached.recommendation or {})
+        recommendation["feedback"] = feedback
+        updated = replace(cached, recommendation=recommendation, feedback=feedback)
+        self._cache[token] = updated
+        for key, snapshot in list(self._search_cache.items()):
+            if any(item.token == token for item in snapshot.records):
+                records = [updated if item.token == token else item for item in snapshot.records]
+                self._search_cache[key] = replace(snapshot, records=records)
+        return {
+            "result_token": token,
+            "feedback": feedback,
+            "message": "切换到智能推荐排序时，感兴趣岗位会前置、不感兴趣岗位后置；反馈仅保存在当前服务进程，不会修改画像或岗位记录，重启后端后清除。",
         }
 
     def _remember_search(
@@ -335,6 +381,7 @@ class JobSearchService:
             "is_saved": False,
             "application": None,
             "latest_match": None,
+            "recommendation": cached.recommendation,
         }
 
     def get_search_result(self, token: str) -> dict:
@@ -352,20 +399,32 @@ class JobSearchService:
         )
         return result
 
+    def get_cached_search_job(self, token: str) -> CachedJob:
+        cached = self._cache.get(token)
+        if cached is None:
+            raise SearchResultNotFound("搜索结果已过期，请重新搜索")
+        return cached
+
+    def save_provider_record(self, session: Session, provider: str, record: JobRecord, *, commit: bool = True):
+        source_name, source_type, authorization_mode, terms_url = self.source_meta(provider)
+        source = self.repository.get_or_create_source(
+            session,
+            provider=provider,
+            name=source_name,
+            source_type=source_type,
+            authorization_mode=authorization_mode,
+            terms_url=terms_url,
+        )
+        job = self.repository.upsert_record(session, source=source, record=record)
+        if commit:
+            session.commit()
+        return job
+
     def save_search_result(self, session: Session, token: str) -> dict:
         cached = self._cache.get(token)
         if cached is None:
             raise SearchResultNotFound("搜索结果已过期，请重新搜索")
-        source = self.repository.get_or_create_source(
-            session,
-            provider=cached.provider,
-            name=cached.source_name,
-            source_type=cached.source_type,
-            authorization_mode=cached.authorization_mode,
-            terms_url=cached.terms_url,
-        )
-        job = self.repository.upsert_record(session, source=source, record=cached.record)
-        session.commit()
+        job = self.save_provider_record(session, cached.provider, cached.record)
         return self.get_detail(session, job.id) or {}
 
     def preview_import(self, detail_url: str) -> dict:
@@ -583,6 +642,8 @@ class JobSearchService:
             source_type=cached.source_type,
             authorization_mode=cached.authorization_mode,
             terms_url=cached.terms_url,
+            recommendation=cached.recommendation,
+            feedback=cached.feedback,
         )
         self._cache[token] = refreshed
         return self.save_search_result(session, token)
